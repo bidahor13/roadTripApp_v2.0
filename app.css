@@ -1,0 +1,43 @@
+ /*Style for trip app -->
+ Name: Babatunde -->
+ Profession: Software Developer */
+
+/*h1{
+    color: #ff4444;
+    font-family: lato;
+}
+
+h3{
+    color: #ff4444;
+}*/
+
+h1 {
+
+    font-weight: 700;
+    font-size: 5em;
+}
+
+body{
+    background:url(https://images.unsplash.com/photo-1420650464488-03b66f2a2930?dpr=1&auto=format&fit=crop&w=1500&h=997&q=80&cs=tinysrgb&crop=);
+    background-size:cover;
+    background-position: center;
+    font-family: lato;
+    color: white;
+
+}
+
+
+html{
+   height: 100%;
+}
+
+#content{
+    text-align: center;
+    padding-top: 25%;
+}
+
+hr{
+    width: 400px;
+    border-top: 1px solid #f8f8f8;
+    border-bottom: 1px solid rgba(0,0,0,0.2);
+}
