@@ -30,6 +30,15 @@ function Hero() {
   );
 }
 
+async function geocodePlace(place) {
+  const query = new URLSearchParams({ q: place, format: 'jsonv2', limit: '1' });
+  const response = await fetch(`https://nominatim.openstreetmap.org/search?${query}`);
+  if (!response.ok) throw new Error('The place search is temporarily unavailable. Please try again.');
+  const results = await response.json();
+  if (!results.length) throw new Error(`We couldn’t find “${place}”. Try adding a city or region.`);
+  return { latitude: Number(results[0].lat), longitude: Number(results[0].lon), label: results[0].display_name };
+}
+
 function RouteMap({ route }) {
   const mapElement = useRef(null);
 
@@ -58,7 +67,7 @@ function RouteMap({ route }) {
   return <div className="route-map" ref={mapElement} aria-label={`Driving route from ${route.from} to ${route.to}`} />;
 }
 
-function TripForm() {
+function TripForm({ destination, onDestinationChange }) {
   const [message, setMessage] = useState('Enter a starting point and destination to see your route.');
   const [route, setRoute] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -73,19 +82,10 @@ function TripForm() {
     setMessage('Finding your places and mapping the drive…');
 
     try {
-      const findPlace = async (place) => {
-        const query = new URLSearchParams({ q: place, format: 'jsonv2', limit: '1' });
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?${query}`);
-        if (!response.ok) throw new Error('The place search is temporarily unavailable. Please try again.');
-        const results = await response.json();
-        if (!results.length) throw new Error(`We couldn’t find “${place}”. Try adding a city or region.`);
-        return { latitude: Number(results[0].lat), longitude: Number(results[0].lon), label: results[0].display_name };
-      };
-
-      const start = await findPlace(from);
+      const start = await geocodePlace(from);
       await new Promise((resolve) => window.setTimeout(resolve, 1100));
-      const destination = await findPlace(to);
-      const coords = `${start.longitude},${start.latitude};${destination.longitude},${destination.latitude}`;
+      const end = await geocodePlace(to);
+      const coords = `${start.longitude},${start.latitude};${end.longitude},${end.latitude}`;
       const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
       if (!response.ok) throw new Error('Directions are temporarily unavailable. Please try again.');
       const data = await response.json();
@@ -105,11 +105,11 @@ function TripForm() {
   }
 
   return (
-    <form className="trip-form" id="plan" onSubmit={handleSubmit}>
+    <form className="trip-form" onSubmit={handleSubmit}>
       <h2>Where are you headed?</h2>
       <div className="form-fields">
         <label>FROM<input name="from" placeholder="Starting city" required /></label>
-        <label>TO<input name="to" placeholder="Destination" required /></label>
+        <label>TO<input name="to" placeholder="Destination" value={destination} onChange={(event) => onDestinationChange(event.target.value)} required /></label>
         <label>WHEN<input name="date" type="date" aria-label="Departure date" /></label>
           <button type="submit" disabled={isLoading}>{isLoading ? 'Finding route…' : 'Find my trip'} <span aria-hidden="true">→</span></button>
       </div>
@@ -119,7 +119,84 @@ function TripForm() {
   );
 }
 
+function HotelSearch({ destination, onDestinationChange }) {
+  const [hotels, setHotels] = useState([]);
+  const [message, setMessage] = useState('Search for stays near your destination.');
+  const [hasSearched, setHasSearched] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setHotels([]);
+    setIsLoading(true);
+    setHasSearched(true);
+    setMessage(`Looking for stays near ${destination.trim()}…`);
+
+    try {
+      const place = await geocodePlace(destination.trim());
+      const query = `[out:json][timeout:25];(nwr["tourism"~"hotel|guest_house|motel|hostel|chalet|apartment"](around:10000,${place.latitude},${place.longitude}););out center 30;`;
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams({ data: query }),
+      });
+      if (!response.ok) throw new Error('Hotel listings are temporarily unavailable. Please try again.');
+      const data = await response.json();
+      const results = data.elements
+        .map((item) => {
+          const lat = item.lat ?? item.center?.lat;
+          const lon = item.lon ?? item.center?.lon;
+          const tags = item.tags || {};
+          return {
+            id: `${item.type}-${item.id}`,
+            name: tags.name || tags.brand || tags.operator,
+            kind: (tags.tourism || 'accommodation').replaceAll('_', ' '),
+            address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']].filter(Boolean).join(' '),
+            lat,
+            lon,
+            distance: Math.hypot((lat - place.latitude) * 111, (lon - place.longitude) * 111 * Math.cos(place.latitude * Math.PI / 180)),
+          };
+        })
+        .filter((item) => item.name && Number.isFinite(item.lat) && Number.isFinite(item.lon))
+        .sort((a, b) => a.distance - b.distance);
+
+      setHotels(results);
+      setMessage(results.length ? `${results.length} nearby stay${results.length === 1 ? '' : 's'} near ${destination.trim()}` : `No mapped stays found near ${destination.trim()}. Try a nearby city or wider area.`);
+    } catch (error) {
+      setMessage(error.message || 'Something went wrong while searching for stays. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <div className="hotel-panel">
+      <h2>Find a place to stay</h2>
+      <p className="hotel-intro">Browse hotels and other stays near your stop.</p>
+      <form className="hotel-search" onSubmit={handleSubmit}>
+        <label>DESTINATION<input value={destination} onChange={(event) => onDestinationChange(event.target.value)} placeholder="City or destination" required /></label>
+        <button type="submit" disabled={isLoading}>{isLoading ? 'Searching…' : 'Search stays'} <span aria-hidden="true">→</span></button>
+      </form>
+      <p className={isLoading ? 'hotel-status is-loading' : 'hotel-status'} role="status" aria-live="polite">{message}</p>
+      {hotels.length > 0 && (
+        <ul className="hotel-results">
+          {hotels.map((hotel) => (
+            <li className="hotel-result" key={hotel.id}>
+              <div><h3>{hotel.name}</h3><p>{hotel.kind}{hotel.address ? ` · ${hotel.address}` : ''}</p><span>{hotel.distance < 1 ? `${Math.round(hotel.distance * 1000)} m` : `${hotel.distance.toFixed(1)} km`} from destination</span></div>
+              <a href={`https://www.openstreetmap.org/?mlat=${hotel.lat}&mlon=${hotel.lon}#map=17/${hotel.lat}/${hotel.lon}`} target="_blank" rel="noreferrer">View map ↗</a>
+            </li>
+          ))}
+        </ul>
+      )}
+      {hasSearched && !isLoading && <p className="hotel-disclaimer">Listings come from OpenStreetMap and may not include prices or availability. <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></p>}
+    </div>
+  );
+}
+
 function App() {
+  const [destination, setDestination] = useState('');
+  const [activeTab, setActiveTab] = useState('route');
+
   return (
     <>
       <div className="backdrop" aria-hidden="true" />
@@ -132,7 +209,17 @@ function App() {
             <h2>Make the miles<br />mean something.</h2>
             <p>Pick a destination, find fellow travelers headed your way, and turn the open road into a shared adventure.</p>
           </div>
-          <TripForm />
+          <div className="trip-planner" id="plan">
+            <div className="trip-tabs" role="tablist" aria-label="Trip planning options">
+              <button id="route-tab" type="button" role="tab" aria-selected={activeTab === 'route'} aria-controls="route-panel" className={activeTab === 'route' ? 'selected' : ''} onClick={() => setActiveTab('route')}>Road trip</button>
+              <button id="hotel-tab" type="button" role="tab" aria-selected={activeTab === 'hotels'} aria-controls="hotel-panel" className={activeTab === 'hotels' ? 'selected' : ''} onClick={() => setActiveTab('hotels')}>Hotels</button>
+            </div>
+            {activeTab === 'route' ? (
+              <div id="route-panel" role="tabpanel" aria-labelledby="route-tab"><TripForm destination={destination} onDestinationChange={setDestination} /></div>
+            ) : (
+              <div id="hotel-panel" role="tabpanel" aria-labelledby="hotel-tab"><HotelSearch destination={destination} onDestinationChange={setDestination} /></div>
+            )}
+          </div>
         </section>
       </main>
     </>
